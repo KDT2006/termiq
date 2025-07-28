@@ -1,7 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"log"
+
+	"github.com/KDT2006/termiq/internal/client"
+)
 
 func main() {
-	fmt.Println("Client is running!")
+	client := client.New("localhost:4000")
+	log.Fatal(client.Connect())
 }

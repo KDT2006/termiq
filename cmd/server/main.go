@@ -1,6 +1,8 @@
 package main
 
 import (
+	"log"
+
 	"github.com/KDT2006/termiq/internal/server"
 )
 
@@ -10,5 +12,5 @@ const (
 
 func main() {
 	server := server.New(listenAddr)
-	server.Start()
+	log.Fatal(server.Start())
 }
