@@ -1,8 +1,10 @@
 package client
 
 import (
+	"bufio"
 	"fmt"
 	"net"
+	"os"
 )
 
 type Client struct {
@@ -23,26 +25,38 @@ func (c *Client) Connect() error {
 	}
 	c.Conn = conn
 	fmt.Printf("Connected to server at %s\n", c.ServerAddr)
-	c.startWriteLoop()
+
+	go c.startWriteLoop()
+	c.startReadLoop()
 
 	return nil
+}
+
+func (c *Client) startReadLoop() {
+	defer c.Conn.Close()
+
+	for {
+		buf := make([]byte, 1024)
+		_, err := c.Conn.Read(buf)
+		if err != nil {
+			fmt.Printf("Error reading from server: %v\n", err)
+			return
+		}
+
+		fmt.Printf("Received: %s\n", string(buf))
+	}
 }
 
 func (c *Client) startWriteLoop() {
 	defer c.Conn.Close()
 
-	for i := range 100 {
-		message := fmt.Sprintf("Message %d", i)
-		c.Conn.Write([]byte(message))
-
-		buf := make([]byte, 1024)
-		_, err := c.Conn.Read(buf)
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		message := scanner.Text()
+		_, err := c.Conn.Write([]byte(message))
 		if err != nil {
-			fmt.Printf("failed to read response: %v\n", err)
+			fmt.Printf("Failed to send message: %v\n", err)
 			return
 		}
-		fmt.Printf("Received response: %s\n", buf)
-
-		// time.Sleep(time.Millisecond)
 	}
 }
