@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -20,18 +21,24 @@ type Server struct {
 	ListenAddr      string
 	clients         map[string]*Client
 	mu              sync.Mutex
-	broadcast       chan OutboundMessage
+	broadcast       chan Message
 	state           GameState
 	questions       []string
+	choices         [][]string
 	answers         []string
 	currentQuestion int
+	endCh           chan struct{}
+	wg              sync.WaitGroup
+	ln              net.Listener // needed for graceful shutdown
 }
 
 func New(listenAddr string) *Server {
 	return &Server{
 		ListenAddr: listenAddr,
 		clients:    make(map[string]*Client),
-		broadcast:  make(chan OutboundMessage, 10),
+		broadcast:  make(chan Message, 10),
+		state:      GameStateLobby,
+		endCh:      make(chan struct{}),
 	}
 }
 
@@ -40,6 +47,7 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to start server: %w", err)
 	}
+	s.ln = ln
 	defer ln.Close()
 
 	go s.handleBroadcasts()
@@ -48,14 +56,29 @@ func (s *Server) Start() error {
 	log.Printf("Server is listening on %s", s.ListenAddr)
 
 	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("failed to accept connection: %v", err)
-			continue
-		}
+		select {
+		case <-s.endCh:
+			log.Println("Server shutting down...")
+			s.closeAllClients()
+			s.wg.Wait()
+			return nil
+		default:
+			{
+				conn, err := ln.Accept()
+				if err != nil {
+					if errors.Is(err, net.ErrClosed) {
+						log.Println("Listener closed")
+						return nil
+					}
 
-		log.Printf("accepted connection from %s", conn.RemoteAddr())
-		go s.HandleConn(conn)
+					log.Printf("failed to accept connection: %v", err)
+					continue
+				}
+
+				log.Printf("accepted connection from %s", conn.RemoteAddr())
+				go s.HandleConn(conn)
+			}
+		}
 	}
 }
 
@@ -73,30 +96,38 @@ func (s *Server) HandleConn(conn net.Conn) {
 }
 
 func (s *Server) handleBroadcasts() {
+	s.wg.Add(1)
+	defer s.wg.Done()
 
 	for {
-		msg := <-s.broadcast
+		select {
+		case <-s.endCh:
+			log.Println("Broadcast handler shutting down")
+			return
+		case msg := <-s.broadcast:
+			{
+				if msg.Client == nil {
+					// broadcast to all clients
+					toUnregister := make(map[*Client]struct{})
+					s.mu.Lock()
+					for _, client := range s.clients {
+						select {
+						case client.outbound <- msg.Payload:
+						default:
+							// client too slow to receive, unregister
+							toUnregister[client] = struct{}{}
+						}
+					}
+					s.mu.Unlock()
 
-		if msg.Client == nil {
-			// broadcast to all clients
-			toUnregister := make(map[*Client]struct{})
-			s.mu.Lock()
-			for _, client := range s.clients {
-				select {
-				case client.outbound <- msg.Payload:
-				default:
-					// client too slow to receive, unregister
-					toUnregister[client] = struct{}{}
+					for client := range toUnregister {
+						s.unregisterClient(client)
+						log.Printf("unregistered client %s due to write failure", client.conn.RemoteAddr())
+					}
+				} else {
+					msg.Client.outbound <- msg.Payload
 				}
 			}
-			s.mu.Unlock()
-
-			for client := range toUnregister {
-				s.unregisterClient(client)
-				log.Printf("unregistered client %s due to write failure", client.conn.RemoteAddr())
-			}
-		} else {
-			msg.Client.outbound <- msg.Payload
 		}
 	}
 
@@ -122,29 +153,54 @@ func (s *Server) unregisterClient(client *Client) {
 }
 
 func (s *Server) readLoop(client *Client) {
-	for {
-		buf := make([]byte, 1024)
-		n, err := client.conn.Read(buf)
-		if err != nil {
-			log.Printf("error reading from client %s: %v", client.conn.RemoteAddr(), err)
-			return
-		}
+	s.wg.Add(1)
+	defer s.wg.Done()
 
-		msg := Message{
-			Client:  client,
-			Type:    MessageTypeAnswer, // assumoing all messages are answers
-			Payload: buf[:n],
+	for {
+		select {
+		case <-s.endCh:
+			log.Printf("read loop for client %s shutting down", client.conn.RemoteAddr())
+			return
+		default:
+			{
+				buf := make([]byte, 1024)
+				n, err := client.conn.Read(buf)
+				if err != nil {
+					log.Printf("error reading from client %s: %v", client.conn.RemoteAddr(), err)
+					return
+				}
+
+				msg := Message{
+					Client:  client,
+					Type:    MessageTypeAnswer, // assumoing all messages are answers
+					Payload: buf[:n],
+				}
+				go s.handleMessage(msg)
+			}
 		}
-		go s.handleMessage(msg)
 	}
 }
 
 func (s *Server) writeLoop(client *Client) {
-	for msg := range client.outbound {
-		_, err := client.conn.Write(msg)
-		if err != nil {
-			log.Printf("error writing to client %s: %v", client.conn.RemoteAddr(), err)
+	s.wg.Add(1)
+	defer s.wg.Done()
+
+	for {
+		select {
+		case <-s.endCh:
+			log.Printf("write loop for client %s shutting down", client.conn.RemoteAddr())
 			return
+		case msg, ok := <-client.outbound:
+			{
+				if !ok {
+					return
+				}
+				_, err := client.conn.Write(msg)
+				if err != nil {
+					log.Printf("error writing to client %s: %v", client.conn.RemoteAddr(), err)
+					return
+				}
+			}
 		}
 	}
 }
@@ -155,6 +211,11 @@ func (s *Server) gameLoop() {
 		"What is the capital of France?",
 		"What is 2 + 2?",
 		"Who wrote 'To Kill a Mockingbird'?",
+	}
+	s.choices = [][]string{
+		{"Paris", "London", "Berlin", "Madrid"},
+		{"3", "4", "5", "6"},
+		{"Harper Lee", "Mark Twain", "Ernest Hemingway", "F. Scott Fitzgerald"},
 	}
 	s.answers = []string{"Paris", "4", "Harper Lee"}
 
@@ -170,15 +231,16 @@ func (s *Server) gameLoop() {
 
 	for i, question := range s.questions {
 		s.currentQuestion = i
-		s.broadcast <- OutboundMessage{
+		userPrompt := fmt.Sprintf("Question %d: %s\nChoices: %v\n", i+1, question, s.choices[i])
+		s.broadcast <- Message{
 			Client:  nil, // broadcast to all clients
 			Type:    MessageTypeChat,
-			Payload: []byte(fmt.Sprintf("Question %d: %s", i+1, question)),
+			Payload: []byte(userPrompt),
 		}
 
 		time.Sleep(5 * time.Second)
 
-		s.broadcast <- OutboundMessage{
+		s.broadcast <- Message{
 			Client:  nil,
 			Type:    MessageTypeChat,
 			Payload: []byte(fmt.Sprintf("Answer %d: %s", i+1, s.answers[i])),
@@ -190,11 +252,16 @@ func (s *Server) gameLoop() {
 	for _, client := range s.clients {
 		leaderboardString += fmt.Sprintf("\n%s: %d points", client.conn.RemoteAddr(), client.score)
 	}
-	s.broadcast <- OutboundMessage{
+	s.broadcast <- Message{
 		Client:  nil,
 		Type:    MessageTypeLeaderboard,
 		Payload: []byte(leaderboardString),
 	}
+
+	fmt.Println("Game finished, waiting for clients to receive final messages...")
+	time.Sleep(5 * time.Second) // wait for clients to receive the final message
+	close(s.endCh)              // signal server shutdown
+	s.ln.Close()                // close listener to stop hanging in the accept loop
 }
 
 func (s *Server) handleMessage(msg Message) {
@@ -206,18 +273,7 @@ func (s *Server) handleMessage(msg Message) {
 		}
 
 		if string(msg.Payload) == s.answers[s.currentQuestion] {
-			s.broadcast <- OutboundMessage{
-				Client:  msg.Client,
-				Type:    MessageTypeChat,
-				Payload: []byte("You're correct!"),
-			}
 			s.updateScore(msg.Client, 10) // static points for now
-		} else {
-			s.broadcast <- OutboundMessage{
-				Client:  msg.Client,
-				Type:    MessageTypeChat,
-				Payload: []byte("Wrong answer!"),
-			}
 		}
 	default:
 		log.Printf("Received unknown message type %d from %s", msg.Type, msg.Client.conn.RemoteAddr())
@@ -226,4 +282,14 @@ func (s *Server) handleMessage(msg Message) {
 
 func (s *Server) updateScore(client *Client, points int) {
 	client.score += points
+}
+
+func (s *Server) closeAllClients() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, client := range s.clients {
+		close(client.outbound)
+		client.conn.Close()
+	}
 }

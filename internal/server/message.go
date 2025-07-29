@@ -14,10 +14,3 @@ type Message struct {
 	Type    MessageType
 	Payload []byte
 }
-
-// OutboundMessage represents a message that will be sent to clients.
-type OutboundMessage struct {
-	Client  *Client
-	Type    MessageType
-	Payload []byte
-}
