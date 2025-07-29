@@ -1,10 +1,8 @@
 package client
 
 import (
-	"bufio"
 	"fmt"
 	"net"
-	"os"
 )
 
 type Client struct {
@@ -33,22 +31,18 @@ func (c *Client) Connect() error {
 func (c *Client) startWriteLoop() {
 	defer c.Conn.Close()
 
-	for {
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Print("Enter message: ")
-		message, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Printf("failed to read message: %v\n", err)
-			return
-		}
+	for i := range 100 {
+		message := fmt.Sprintf("Message %d", i)
 		c.Conn.Write([]byte(message))
 
 		buf := make([]byte, 1024)
-		_, err = c.Conn.Read(buf)
+		_, err := c.Conn.Read(buf)
 		if err != nil {
 			fmt.Printf("failed to read response: %v\n", err)
 			return
 		}
 		fmt.Printf("Received response: %s\n", buf)
+
+		// time.Sleep(time.Millisecond)
 	}
 }
