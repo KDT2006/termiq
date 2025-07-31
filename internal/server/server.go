@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/KDT2006/termiq/internal/config"
 	"github.com/KDT2006/termiq/internal/protocol"
 )
 
@@ -27,21 +28,38 @@ type Server struct {
 	mu              sync.Mutex
 	broadcast       chan protocol.Message
 	state           protocol.GameState
-	questions       []string
-	choices         [][]string
-	answers         []int // indices of correct answers
+	config          *config.Config
+	currentSet      *config.QuestionSet
 	currentQuestion int
 	endCh           chan struct{}
 	wg              sync.WaitGroup
 	ln              net.Listener // needed for graceful shutdown
 }
 
-func New(listenAddr string) *Server {
+func New(listenAddr string, configPath string, questionSet string) *Server {
 	protocol.Init() // ensure protocol types are registered with gob
+
+	// Load questions
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	var set *config.QuestionSet
+	if questionSet == "" {
+		set, err = cfg.GetDefaultSet()
+	} else {
+		set, err = cfg.GetQuestionSet(questionSet)
+	}
+	if err != nil {
+		log.Fatalf("failed to get question set: %v", err)
+	}
 
 	return &Server{
 		ListenAddr: listenAddr,
 		clients:    make(map[string]*Client),
+		config:     cfg,
+		currentSet: set,
 		broadcast:  make(chan protocol.Message, 10),
 		state:      protocol.GameStateLobby,
 		endCh:      make(chan struct{}),
@@ -244,19 +262,6 @@ func (s *Server) writeLoop(client *Client) {
 }
 
 func (s *Server) gameLoop() {
-	// TODO: read from config
-	s.questions = []string{
-		"What is the capital of France?",
-		"What is 2 + 2?",
-		"Who wrote 'To Kill a Mockingbird'?",
-	}
-	s.choices = [][]string{
-		{"Paris", "London", "Berlin", "Madrid"},
-		{"3", "4", "5", "6"},
-		{"Harper Lee", "Mark Twain", "Ernest Hemingway", "F. Scott Fitzgerald"},
-	}
-	s.answers = []int{0, 1, 0}
-
 	s.state = protocol.GameStateLobby
 	log.Println("Waiting for minimum players to start the game...")
 
@@ -268,21 +273,23 @@ func (s *Server) gameLoop() {
 	s.state = protocol.GameStateQuestion
 	s.broadcastGameState()
 
-	for i, question := range s.questions {
+	for i, q := range s.currentSet.Questions {
+		timeLimit := s.currentSet.TimeLimit
+
 		s.currentQuestion = i
 		s.broadcast <- protocol.Message{
 			Type: protocol.QuestionMessage,
 			Payload: protocol.QuestionPayload{
 				QuestionID: i,
-				Question:   question,
-				Choices:    s.choices[i],
-				TimeLimit:  5, // static time limit for now
+				Question:   q.Text,
+				Choices:    q.Choices,
+				TimeLimit:  timeLimit,
 			},
 		}
 
 		// broadcast timer updates
 		go func() {
-			for timeLeft := 5; timeLeft > 0; timeLeft-- {
+			for timeLeft := timeLimit; timeLeft > 0; timeLeft-- {
 				s.broadcast <- protocol.Message{
 					Type: protocol.TimerUpdate,
 					Payload: protocol.TimerPayload{
@@ -294,7 +301,7 @@ func (s *Server) gameLoop() {
 			}
 		}()
 
-		time.Sleep(5 * time.Second)
+		time.Sleep(time.Duration(timeLimit) * time.Second)
 	}
 
 	s.state = protocol.GameStateScores
@@ -340,8 +347,8 @@ func (s *Server) handleMessage(msg protocol.Message, client *Client) {
 			return
 		}
 
-		if answerPayload.Answer == s.answers[s.currentQuestion] {
-			s.updateScore(client, 10) // static points for now
+		if answerPayload.Answer == s.currentSet.Questions[s.currentQuestion].Answer {
+			s.updateScore(client, s.currentSet.Questions[s.currentQuestion].Points)
 		}
 	default:
 		log.Printf("Received unknown message type %s from %s", msg.Type, client.conn.RemoteAddr())
