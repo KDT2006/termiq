@@ -25,10 +25,10 @@ type Server struct {
 	clients         map[string]*Client
 	mu              sync.Mutex
 	broadcast       chan protocol.Message
-	state           GameState
+	state           protocol.GameState
 	questions       []string
 	choices         [][]string
-	answers         []string
+	answers         []int // indices of correct answers
 	currentQuestion int
 	endCh           chan struct{}
 	wg              sync.WaitGroup
@@ -36,11 +36,13 @@ type Server struct {
 }
 
 func New(listenAddr string) *Server {
+	protocol.Init() // ensure protocol types are registered with gob
+
 	return &Server{
 		ListenAddr: listenAddr,
 		clients:    make(map[string]*Client),
 		broadcast:  make(chan protocol.Message, 10),
-		state:      GameStateLobby,
+		state:      protocol.GameStateLobby,
 		endCh:      make(chan struct{}),
 	}
 }
@@ -88,7 +90,7 @@ func (s *Server) Start() error {
 func (s *Server) HandleConn(conn net.Conn) {
 	client := &Client{
 		conn:     conn,
-		outbound: make(chan protocol.Message),
+		outbound: make(chan protocol.Message, 10),
 		encoder:  gob.NewEncoder(conn),
 		decoder:  gob.NewDecoder(conn),
 	}
@@ -119,6 +121,7 @@ func (s *Server) handleBroadcasts() {
 					case client.outbound <- msg:
 					default:
 						// client too slow to receive, unregister
+						log.Printf("client %s too slow to receive message, unregistering", client.conn.RemoteAddr())
 						toUnregister[client] = struct{}{}
 					}
 				}
@@ -164,19 +167,14 @@ func (s *Server) readLoop(client *Client) {
 			return
 		default:
 			{
-				buf := make([]byte, 1024)
-				n, err := client.conn.Read(buf)
+				var msg protocol.Message
+				err := client.decoder.Decode(&msg)
 				if err != nil {
-					log.Printf("error reading from client %s: %v", client.conn.RemoteAddr(), err)
+					log.Printf("error decoding message from client %s: %v", client.conn.RemoteAddr(), err)
 					return
 				}
 
-				msg := Message{
-					Client:  client,
-					Type:    MessageTypeAnswer, // assumoing all messages are answers
-					Payload: buf[:n],
-				}
-				go s.handleMessage(msg)
+				go s.handleMessage(msg, client)
 			}
 		}
 	}
@@ -218,9 +216,9 @@ func (s *Server) gameLoop() {
 		{"3", "4", "5", "6"},
 		{"Harper Lee", "Mark Twain", "Ernest Hemingway", "F. Scott Fitzgerald"},
 	}
-	s.answers = []string{"Paris", "4", "Harper Lee"}
+	s.answers = []int{0, 1, 0}
 
-	s.state = GameStateLobby
+	s.state = protocol.GameStateLobby
 	log.Println("Waiting for minimum players to start the game...")
 
 	for len(s.clients) < 2 {
@@ -228,7 +226,14 @@ func (s *Server) gameLoop() {
 	}
 
 	log.Println("Minimum players reached, starting the game...")
-	s.state = GameStateQuestion
+	s.state = protocol.GameStateQuestion
+	s.broadcast <- protocol.Message{
+		Type: protocol.GameStateUpdate,
+		Payload: protocol.GameStatePayload{
+			State:       s.state,
+			PlayerCount: len(s.clients),
+		},
+	}
 
 	for i, question := range s.questions {
 		s.currentQuestion = i
@@ -242,12 +247,25 @@ func (s *Server) gameLoop() {
 			},
 		}
 
-		// TODO: Send timer updates
+		// broadcast timer updates
+		go func() {
+			for timeLeft := 5; timeLeft > 0; timeLeft-- {
+				s.broadcast <- protocol.Message{
+					Type: protocol.TimerUpdate,
+					Payload: protocol.TimerPayload{
+						QuestionID: s.currentQuestion,
+						TimeLeft:   timeLeft,
+					},
+				}
+				time.Sleep(time.Second)
+			}
+		}()
 
 		time.Sleep(5 * time.Second)
 	}
 
-	s.state = GameStateFinished
+	s.state = protocol.GameStateFinished
+
 	leaderboardString := "Leaderboard:"
 	for _, client := range s.clients {
 		leaderboardString += fmt.Sprintf("\n%s: %d points", client.conn.RemoteAddr(), client.score)
@@ -274,19 +292,26 @@ func (s *Server) gameLoop() {
 	s.ln.Close()                // close listener to stop hanging in the accept loop
 }
 
-func (s *Server) handleMessage(msg Message) {
+func (s *Server) handleMessage(msg protocol.Message, client *Client) {
 	switch msg.Type {
-	case MessageTypeAnswer:
-		if s.state != GameStateQuestion {
-			log.Printf("Received answer from %s but game is not in question state", msg.Client.conn.RemoteAddr())
+	case protocol.SubmitAnswer:
+		fmt.Println("Received answer submission")
+		if s.state != protocol.GameStateQuestion {
+			log.Printf("Received answer from %s but game is not in question state", client.conn.RemoteAddr())
 			return
 		}
 
-		if string(msg.Payload) == s.answers[s.currentQuestion] {
-			s.updateScore(msg.Client, 10) // static points for now
+		answerPayload, ok := msg.Payload.(protocol.SubmitAnswerPayload)
+		if !ok {
+			log.Printf("Invalid payload type for SubmitAnswer from %s", client.conn.RemoteAddr())
+			return
+		}
+
+		if answerPayload.Answer == s.answers[s.currentQuestion] {
+			s.updateScore(client, 10) // static points for now
 		}
 	default:
-		log.Printf("Received unknown message type %d from %s", msg.Type, msg.Client.conn.RemoteAddr())
+		log.Printf("Received unknown message type %s from %s", msg.Type, client.conn.RemoteAddr())
 	}
 }
 

@@ -5,7 +5,7 @@ import "encoding/gob"
 type MessageType string
 type GameState string
 
-func init() {
+func Init() {
 	gob.Register(Message{})
 	gob.Register(GameStatePayload{})
 	gob.Register(QuestionPayload{})
@@ -88,6 +88,6 @@ type JoinGamePayload struct {
 
 type SubmitAnswerPayload struct {
 	QuestionID int
-	Answer     string
+	Answer     int
 	TimeLeft   int
 }

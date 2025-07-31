@@ -29,6 +29,9 @@ func New(serverAddr string) *Client {
 }
 
 func (c *Client) Connect() error {
+	// Initialize gob types
+	protocol.Init()
+
 	fmt.Print("Enter your player name: ")
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
@@ -75,7 +78,6 @@ func (c *Client) handleMessage(msg protocol.Message) {
 	case protocol.QuestionMessage:
 		question := msg.Payload.(protocol.QuestionPayload)
 		c.currentQuestion = &question
-
 		c.displayQuestion(question)
 
 	case protocol.TimerUpdate:
@@ -101,7 +103,7 @@ func (c *Client) inputLoop() {
 }
 
 func (c *Client) handleInput(input string) {
-	if c.gameState != "question" || c.currentQuestion == nil {
+	if c.gameState != protocol.GameStateQuestion || c.currentQuestion == nil {
 		return
 	}
 
@@ -117,12 +119,11 @@ func (c *Client) handleInput(input string) {
 		return
 	}
 
-	answer := c.currentQuestion.Choices[answerIndex]
 	c.sendMessage(protocol.Message{
 		Type: protocol.SubmitAnswer,
 		Payload: protocol.SubmitAnswerPayload{
 			QuestionID: c.currentQuestion.QuestionID,
-			Answer:     answer,
+			Answer:     answerIndex,
 			TimeLeft:   c.timeLeft,
 		},
 	})
@@ -142,7 +143,6 @@ func (c *Client) displayQuestion(question protocol.QuestionPayload) {
 	for i, choice := range question.Choices {
 		fmt.Printf("%c) %s\n", 'A'+i, choice)
 	}
-	fmt.Printf("\nTime remaining: %d seconds\n", question.TimeLimit)
 }
 
 func (c *Client) displayTimer(timer protocol.TimerPayload) {
