@@ -1,12 +1,15 @@
 package server
 
 import (
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/KDT2006/termiq/internal/protocol"
 )
 
 type GameState byte
@@ -21,7 +24,7 @@ type Server struct {
 	ListenAddr      string
 	clients         map[string]*Client
 	mu              sync.Mutex
-	broadcast       chan Message
+	broadcast       chan protocol.Message
 	state           GameState
 	questions       []string
 	choices         [][]string
@@ -36,7 +39,7 @@ func New(listenAddr string) *Server {
 	return &Server{
 		ListenAddr: listenAddr,
 		clients:    make(map[string]*Client),
-		broadcast:  make(chan Message, 10),
+		broadcast:  make(chan protocol.Message, 10),
 		state:      GameStateLobby,
 		endCh:      make(chan struct{}),
 	}
@@ -85,7 +88,9 @@ func (s *Server) Start() error {
 func (s *Server) HandleConn(conn net.Conn) {
 	client := &Client{
 		conn:     conn,
-		outbound: make(chan []byte, 10),
+		outbound: make(chan protocol.Message),
+		encoder:  gob.NewEncoder(conn),
+		decoder:  gob.NewDecoder(conn),
 	}
 
 	s.registerClient(client)
@@ -106,26 +111,22 @@ func (s *Server) handleBroadcasts() {
 			return
 		case msg := <-s.broadcast:
 			{
-				if msg.Client == nil {
-					// broadcast to all clients
-					toUnregister := make(map[*Client]struct{})
-					s.mu.Lock()
-					for _, client := range s.clients {
-						select {
-						case client.outbound <- msg.Payload:
-						default:
-							// client too slow to receive, unregister
-							toUnregister[client] = struct{}{}
-						}
+				// broadcast to all clients
+				toUnregister := make(map[*Client]struct{})
+				s.mu.Lock()
+				for _, client := range s.clients {
+					select {
+					case client.outbound <- msg:
+					default:
+						// client too slow to receive, unregister
+						toUnregister[client] = struct{}{}
 					}
-					s.mu.Unlock()
+				}
+				s.mu.Unlock()
 
-					for client := range toUnregister {
-						s.unregisterClient(client)
-						log.Printf("unregistered client %s due to write failure", client.conn.RemoteAddr())
-					}
-				} else {
-					msg.Client.outbound <- msg.Payload
+				for client := range toUnregister {
+					s.unregisterClient(client)
+					log.Printf("unregistered client %s due to write failure", client.conn.RemoteAddr())
 				}
 			}
 		}
@@ -195,7 +196,7 @@ func (s *Server) writeLoop(client *Client) {
 				if !ok {
 					return
 				}
-				_, err := client.conn.Write(msg)
+				err := client.encoder.Encode(msg)
 				if err != nil {
 					log.Printf("error writing to client %s: %v", client.conn.RemoteAddr(), err)
 					return
@@ -231,20 +232,19 @@ func (s *Server) gameLoop() {
 
 	for i, question := range s.questions {
 		s.currentQuestion = i
-		userPrompt := fmt.Sprintf("Question %d: %s\nChoices: %v\n", i+1, question, s.choices[i])
-		s.broadcast <- Message{
-			Client:  nil, // broadcast to all clients
-			Type:    MessageTypeChat,
-			Payload: []byte(userPrompt),
+		s.broadcast <- protocol.Message{
+			Type: protocol.QuestionMessage,
+			Payload: protocol.QuestionPayload{
+				QuestionID: i,
+				Question:   question,
+				Choices:    s.choices[i],
+				TimeLimit:  5, // static time limit for now
+			},
 		}
+
+		// TODO: Send timer updates
 
 		time.Sleep(5 * time.Second)
-
-		s.broadcast <- Message{
-			Client:  nil,
-			Type:    MessageTypeChat,
-			Payload: []byte(fmt.Sprintf("Answer %d: %s", i+1, s.answers[i])),
-		}
 	}
 
 	s.state = GameStateFinished
@@ -252,10 +252,20 @@ func (s *Server) gameLoop() {
 	for _, client := range s.clients {
 		leaderboardString += fmt.Sprintf("\n%s: %d points", client.conn.RemoteAddr(), client.score)
 	}
-	s.broadcast <- Message{
-		Client:  nil,
-		Type:    MessageTypeLeaderboard,
-		Payload: []byte(leaderboardString),
+
+	rankings := make([]protocol.PlayerRank, 0, len(s.clients))
+	for id, client := range s.clients {
+		rankings = append(rankings, protocol.PlayerRank{
+			PlayerName: id,
+			Score:      client.score,
+			Rank:       0, // TODO: calculate rank based on score
+		})
+	}
+	s.broadcast <- protocol.Message{
+		Type: protocol.LeaderboardMsg,
+		Payload: protocol.LeaderboardPayload{
+			Rankings: rankings,
+		},
 	}
 
 	fmt.Println("Game finished, waiting for clients to receive final messages...")

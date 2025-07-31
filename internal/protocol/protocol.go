@@ -1,7 +1,21 @@
 package protocol
 
+import "encoding/gob"
+
 type MessageType string
 type GameState string
+
+func init() {
+	gob.Register(Message{})
+	gob.Register(GameStatePayload{})
+	gob.Register(QuestionPayload{})
+	gob.Register(TimerPayload{})
+	gob.Register(ScorePayload{})
+	gob.Register(LeaderboardPayload{})
+	gob.Register(PlayerRank{})
+	gob.Register(JoinGamePayload{})
+	gob.Register(SubmitAnswerPayload{})
+}
 
 const (
 	// Server -> Client
@@ -63,9 +77,9 @@ type LeaderboardPayload struct {
 
 // PlayerRank represents a player's rank in the leaderboard.
 type PlayerRank struct {
-	PlayerID string
-	Score    int
-	Rank     int
+	PlayerName string
+	Score      int
+	Rank       int
 }
 
 type JoinGamePayload struct {

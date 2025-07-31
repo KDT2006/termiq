@@ -2,14 +2,24 @@ package client
 
 import (
 	"bufio"
+	"encoding/gob"
 	"fmt"
 	"net"
 	"os"
+	"strings"
+
+	"github.com/KDT2006/termiq/internal/protocol"
 )
 
 type Client struct {
-	ServerAddr string
-	Conn       net.Conn
+	ServerAddr      string
+	conn            net.Conn
+	playerName      string
+	encoder         *gob.Encoder
+	decoder         *gob.Decoder
+	currentQuestion *protocol.QuestionPayload
+	gameState       protocol.GameState
+	timeLeft        int // seconds left for the current question
 }
 
 func New(serverAddr string) *Client {
@@ -19,44 +29,140 @@ func New(serverAddr string) *Client {
 }
 
 func (c *Client) Connect() error {
+	fmt.Print("Enter your player name: ")
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	c.playerName = scanner.Text()
+
 	conn, err := net.Dial("tcp", c.ServerAddr)
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	c.Conn = conn
+	c.conn = conn
+	c.encoder = gob.NewEncoder(conn)
+	c.decoder = gob.NewDecoder(conn)
+
 	fmt.Printf("Connected to server at %s\n", c.ServerAddr)
 
-	go c.startWriteLoop()
-	c.startReadLoop()
+	go c.readLoop()
+	c.inputLoop()
 
 	return nil
 }
 
-func (c *Client) startReadLoop() {
-	defer c.Conn.Close()
+func (c *Client) sendMessage(msg protocol.Message) error {
+	return c.encoder.Encode(msg)
+}
 
+func (c *Client) readLoop() {
 	for {
-		buf := make([]byte, 1024)
-		_, err := c.Conn.Read(buf)
-		if err != nil {
-			fmt.Printf("Error reading from server: %v\n", err)
+		var msg protocol.Message
+		if err := c.decoder.Decode(&msg); err != nil {
+			fmt.Printf("Error reading message: %v\n", err)
 			return
 		}
-
-		fmt.Printf("Received: %s\n", string(buf))
+		c.handleMessage(msg)
 	}
 }
 
-func (c *Client) startWriteLoop() {
-	defer c.Conn.Close()
+func (c *Client) handleMessage(msg protocol.Message) {
+	switch msg.Type {
+	case protocol.GameStateUpdate:
+		state := msg.Payload.(protocol.GameStatePayload)
+		c.gameState = state.State
+		c.displayGameState(state)
 
+	case protocol.QuestionMessage:
+		question := msg.Payload.(protocol.QuestionPayload)
+		c.currentQuestion = &question
+
+		c.displayQuestion(question)
+
+	case protocol.TimerUpdate:
+		timer := msg.Payload.(protocol.TimerPayload)
+		c.timeLeft = timer.TimeLeft
+		c.displayTimer(timer)
+
+	case protocol.ScoreUpdate:
+		score := msg.Payload.(protocol.ScorePayload)
+		c.displayScore(score)
+
+	case protocol.LeaderboardMsg:
+		leaderboard := msg.Payload.(protocol.LeaderboardPayload)
+		c.displayLeaderboard(leaderboard)
+	}
+}
+
+func (c *Client) inputLoop() {
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
-		message := scanner.Text()
-		_, err := c.Conn.Write([]byte(message))
-		if err != nil {
-			fmt.Printf("Failed to send message: %v\n", err)
-			return
+		c.handleInput(scanner.Text())
+	}
+}
+
+func (c *Client) handleInput(input string) {
+	if c.gameState != "question" || c.currentQuestion == nil {
+		return
+	}
+
+	input = strings.TrimSpace(input)
+	if len(input) != 1 {
+		fmt.Println("Please enter a single letter (A, B, C, or D)")
+		return
+	}
+
+	answerIndex := int(input[0] - 'A')
+	if answerIndex < 0 || answerIndex >= len(c.currentQuestion.Choices) {
+		fmt.Println("Invalid choice. Please enter A, B, C, or D")
+		return
+	}
+
+	answer := c.currentQuestion.Choices[answerIndex]
+	c.sendMessage(protocol.Message{
+		Type: protocol.SubmitAnswer,
+		Payload: protocol.SubmitAnswerPayload{
+			QuestionID: c.currentQuestion.QuestionID,
+			Answer:     answer,
+			TimeLeft:   c.timeLeft,
+		},
+	})
+}
+
+// Display functions
+func (c *Client) displayGameState(state protocol.GameStatePayload) {
+	fmt.Printf("\n=== Game State: %s ===\n", state.State)
+	if state.State == "lobby" {
+		fmt.Printf("Waiting for players... (%d connected)\n", state.PlayerCount)
+	}
+}
+
+func (c *Client) displayQuestion(question protocol.QuestionPayload) {
+	fmt.Printf("\n=== Question %d ===\n", question.QuestionID+1)
+	fmt.Printf("%s\n\n", question.Question)
+	for i, choice := range question.Choices {
+		fmt.Printf("%c) %s\n", 'A'+i, choice)
+	}
+	fmt.Printf("\nTime remaining: %d seconds\n", question.TimeLimit)
+}
+
+func (c *Client) displayTimer(timer protocol.TimerPayload) {
+	fmt.Printf("\rTime remaining: %d seconds", timer.TimeLeft)
+}
+
+func (c *Client) displayScore(score protocol.ScorePayload) {
+	if score.PlayerID == c.playerName {
+		if score.Correct {
+			fmt.Printf("\nCorrect! Score: %d\n", score.Score)
+		} else {
+			fmt.Printf("\nIncorrect. Score: %d\n", score.Score)
 		}
 	}
+}
+
+func (c *Client) displayLeaderboard(leaderboard protocol.LeaderboardPayload) {
+	fmt.Println("\n=== LEADERBOARD ===")
+	for _, rank := range leaderboard.Rankings {
+		fmt.Printf("%d. %s: %d points\n", rank.Rank, rank.PlayerName, rank.Score)
+	}
+	fmt.Println("=================")
 }
