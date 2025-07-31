@@ -24,6 +24,7 @@ const (
 	TimerUpdate     MessageType = "timer"
 	ScoreUpdate     MessageType = "score"
 	LeaderboardMsg  MessageType = "leaderboard"
+	GameOverMsg     MessageType = "game_over"
 
 	// Client -> Server
 	JoinGame     MessageType = "join"

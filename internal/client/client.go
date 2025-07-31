@@ -47,6 +47,17 @@ func (c *Client) Connect() error {
 
 	fmt.Printf("Connected to server at %s\n", c.ServerAddr)
 
+	// Send join message
+	err = c.sendMessage(protocol.Message{
+		Type: protocol.JoinGame,
+		Payload: protocol.JoinGamePayload{
+			PlayerName: c.playerName,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send join message: %w", err)
+	}
+
 	go c.readLoop()
 	c.inputLoop()
 
@@ -72,6 +83,11 @@ func (c *Client) handleMessage(msg protocol.Message) {
 	switch msg.Type {
 	case protocol.GameStateUpdate:
 		state := msg.Payload.(protocol.GameStatePayload)
+		if state.State == protocol.GameStateFinished {
+			fmt.Println("Game is finished! Shutting down client...")
+			c.conn.Close()
+			os.Exit(0)
+		}
 		c.gameState = state.State
 		c.displayGameState(state)
 
@@ -83,7 +99,7 @@ func (c *Client) handleMessage(msg protocol.Message) {
 	case protocol.TimerUpdate:
 		timer := msg.Payload.(protocol.TimerPayload)
 		c.timeLeft = timer.TimeLeft
-		c.displayTimer(timer)
+		// c.displayTimer(timer) // Can be used to display timer updates if needed
 
 	case protocol.ScoreUpdate:
 		score := msg.Payload.(protocol.ScorePayload)
@@ -143,10 +159,11 @@ func (c *Client) displayQuestion(question protocol.QuestionPayload) {
 	for i, choice := range question.Choices {
 		fmt.Printf("%c) %s\n", 'A'+i, choice)
 	}
+	fmt.Printf("Time limit: %d seconds\n", question.TimeLimit)
 }
 
 func (c *Client) displayTimer(timer protocol.TimerPayload) {
-	fmt.Printf("\rTime remaining: %d seconds", timer.TimeLeft)
+	fmt.Printf("Time remaining: %d seconds\n", timer.TimeLeft)
 }
 
 func (c *Client) displayScore(score protocol.ScorePayload) {

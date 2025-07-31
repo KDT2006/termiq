@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -88,11 +89,37 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) HandleConn(conn net.Conn) {
+	connDecoder := gob.NewDecoder(conn)
+	var msg protocol.Message
+	if err := connDecoder.Decode(&msg); err != nil {
+		log.Printf("failed to decode message: %v", err)
+		conn.Close()
+		return
+	}
+
+	var playerName string
+
+	if msg.Type == protocol.JoinGame {
+		joinMsg, ok := msg.Payload.(protocol.JoinGamePayload)
+		if !ok {
+			log.Printf("invalid join game payload from %s", conn.RemoteAddr())
+			conn.Close()
+			return
+		}
+
+		playerName = joinMsg.PlayerName
+	} else {
+		log.Printf("expected join message but got %s from %s", msg.Type, conn.RemoteAddr())
+		conn.Close()
+		return
+	}
+
 	client := &Client{
-		conn:     conn,
-		outbound: make(chan protocol.Message, 10),
-		encoder:  gob.NewEncoder(conn),
-		decoder:  gob.NewDecoder(conn),
+		conn:       conn,
+		outbound:   make(chan protocol.Message, 10),
+		encoder:    gob.NewEncoder(conn),
+		decoder:    connDecoder,
+		playerName: playerName,
 	}
 
 	s.registerClient(client)
@@ -170,6 +197,12 @@ func (s *Server) readLoop(client *Client) {
 				var msg protocol.Message
 				err := client.decoder.Decode(&msg)
 				if err != nil {
+					if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) &&
+						s.state == protocol.GameStateFinished {
+						log.Printf("connection closed by client %s", client.conn.RemoteAddr())
+						return
+					}
+
 					log.Printf("error decoding message from client %s: %v", client.conn.RemoteAddr(), err)
 					return
 				}
@@ -196,6 +229,12 @@ func (s *Server) writeLoop(client *Client) {
 				}
 				err := client.encoder.Encode(msg)
 				if err != nil {
+					if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) &&
+						s.state == protocol.GameStateFinished {
+						log.Printf("connection closed by client %s", client.conn.RemoteAddr())
+						return
+					}
+
 					log.Printf("error writing to client %s: %v", client.conn.RemoteAddr(), err)
 					return
 				}
@@ -227,13 +266,7 @@ func (s *Server) gameLoop() {
 
 	log.Println("Minimum players reached, starting the game...")
 	s.state = protocol.GameStateQuestion
-	s.broadcast <- protocol.Message{
-		Type: protocol.GameStateUpdate,
-		Payload: protocol.GameStatePayload{
-			State:       s.state,
-			PlayerCount: len(s.clients),
-		},
-	}
+	s.broadcastGameState()
 
 	for i, question := range s.questions {
 		s.currentQuestion = i
@@ -264,12 +297,8 @@ func (s *Server) gameLoop() {
 		time.Sleep(5 * time.Second)
 	}
 
-	s.state = protocol.GameStateFinished
-
-	leaderboardString := "Leaderboard:"
-	for _, client := range s.clients {
-		leaderboardString += fmt.Sprintf("\n%s: %d points", client.conn.RemoteAddr(), client.score)
-	}
+	s.state = protocol.GameStateScores
+	s.broadcastGameState()
 
 	rankings := make([]protocol.PlayerRank, 0, len(s.clients))
 	for id, client := range s.clients {
@@ -285,9 +314,13 @@ func (s *Server) gameLoop() {
 			Rankings: rankings,
 		},
 	}
+	time.Sleep(2 * time.Second) // give clients time to process scores
 
 	fmt.Println("Game finished, waiting for clients to receive final messages...")
-	time.Sleep(5 * time.Second) // wait for clients to receive the final message
+	s.state = protocol.GameStateFinished
+	s.broadcastGameState()
+
+	time.Sleep(2 * time.Second) // wait for clients to receive the final message
 	close(s.endCh)              // signal server shutdown
 	s.ln.Close()                // close listener to stop hanging in the accept loop
 }
@@ -295,7 +328,7 @@ func (s *Server) gameLoop() {
 func (s *Server) handleMessage(msg protocol.Message, client *Client) {
 	switch msg.Type {
 	case protocol.SubmitAnswer:
-		fmt.Println("Received answer submission")
+		fmt.Printf("Received answer submission from client %s\n", client.conn.RemoteAddr())
 		if s.state != protocol.GameStateQuestion {
 			log.Printf("Received answer from %s but game is not in question state", client.conn.RemoteAddr())
 			return
@@ -317,6 +350,16 @@ func (s *Server) handleMessage(msg protocol.Message, client *Client) {
 
 func (s *Server) updateScore(client *Client, points int) {
 	client.score += points
+}
+
+func (s *Server) broadcastGameState() {
+	s.broadcast <- protocol.Message{
+		Type: protocol.GameStateUpdate,
+		Payload: protocol.GameStatePayload{
+			State:       s.state,
+			PlayerCount: len(s.clients),
+		},
+	}
 }
 
 func (s *Server) closeAllClients() {
