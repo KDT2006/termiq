@@ -11,6 +11,6 @@ const (
 )
 
 func main() {
-	server := server.New(listenAddr, "", "")
+	server := server.New(listenAddr)
 	log.Fatal(server.Start())
 }

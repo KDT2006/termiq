@@ -1,6 +1,10 @@
 package protocol
 
-import "encoding/gob"
+import (
+	"encoding/gob"
+
+	"github.com/KDT2006/termiq/internal/config"
+)
 
 type MessageType string
 type GameState string
@@ -15,10 +19,18 @@ func Init() {
 	gob.Register(PlayerRank{})
 	gob.Register(JoinGamePayload{})
 	gob.Register(SubmitAnswerPayload{})
+	gob.Register(CreateGamePayload{})
+	gob.Register(config.Config{})
+	gob.Register(config.QuestionSet{})
+	gob.Register(config.Question{})
+	gob.Register(JoinGameResponse{})
+	gob.Register(CreateGameResponse{})
+	gob.Register(StartGamePayload{})
+	gob.Register(MatchmakerError{})
 }
 
 const (
-	// Server -> Client
+	// Game -> Client
 	GameStateUpdate MessageType = "game_state"
 	QuestionMessage MessageType = "question"
 	TimerUpdate     MessageType = "timer"
@@ -26,9 +38,18 @@ const (
 	LeaderboardMsg  MessageType = "leaderboard"
 	GameOverMsg     MessageType = "game_over"
 
-	// Client -> Server
-	JoinGame     MessageType = "join"
+	// Client -> Game
+	StartGame    MessageType = "start_game"
 	SubmitAnswer MessageType = "answer"
+
+	// Client -> Matchmaker
+	JoinGame   MessageType = "join"
+	CreateGame MessageType = "create_game"
+
+	// Matchmaker -> Client
+	JoinGameResponseMsg   MessageType = "join_response"
+	CreateGameResponseMsg MessageType = "create_response"
+	MatchmakerErrorMsg    MessageType = "error"
 )
 
 const (
@@ -83,12 +104,36 @@ type PlayerRank struct {
 	Rank       int
 }
 
-type JoinGamePayload struct {
-	PlayerName string
-}
-
+// SubmitAnswerPayload represents the payload for submitting an answer to a question.
 type SubmitAnswerPayload struct {
 	QuestionID int
 	Answer     int
 	TimeLeft   int
+}
+
+type JoinGamePayload struct {
+	PlayerName string
+	GameCode   string // auto-genrerated code on the server
+}
+
+type StartGamePayload struct { // empty struct to signal game start from the host
+}
+
+type CreateGamePayload struct {
+	PlayerName string
+	Config     *config.Config
+	CurrentSet *config.QuestionSet
+}
+
+type JoinGameResponse struct {
+	ServerURL string // URL to connect to the game server
+}
+
+type CreateGameResponse struct {
+	ServerURL string // URL to connect to the game server
+	GameCode  string // auto-generated game code
+}
+
+type MatchmakerError struct {
+	Message string // Error message
 }

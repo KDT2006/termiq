@@ -12,9 +12,11 @@ import (
 )
 
 type Client struct {
-	ServerAddr      string
+	ServerAddr      string // Matchmaker server address
+	GameServerAddr  string // Game server address
 	conn            net.Conn
 	playerName      string
+	gameCode        string // Game code for joining
 	encoder         *gob.Encoder
 	decoder         *gob.Decoder
 	currentQuestion *protocol.QuestionPayload
@@ -26,21 +28,47 @@ type Client struct {
 func New(serverAddr string) *Client {
 	return &Client{
 		ServerAddr: serverAddr,
+		gameState:  protocol.GameStateLobby,
 	}
 }
 
-func (c *Client) Connect() error {
+func (c *Client) Init() {
 	// Initialize gob types
 	protocol.Init()
 
-	fmt.Print("Enter your player name: ")
+	// Client can either Join or Host a quiz
+	fmt.Println("Welcome to Termiq! You can either join an existing game or create a new one.")
+	fmt.Println("1. Join an existing game")
+	fmt.Println("2. Create a new game")
+	fmt.Print("Please select an option (1 or 2): ")
+
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
-	c.playerName = scanner.Text()
+	option := strings.TrimSpace(scanner.Text())
+	switch option {
+	case "1":
+		if err := c.JoinGame(); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	case "2":
+		if err := c.CreateGame(); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	default:
+		fmt.Println("Invalid option. Please restart the client and try again.")
+		os.Exit(1)
+	}
+}
+
+func (c *Client) JoinGame() error {
+	c.collectName()
+	c.collectGameCode()
 
 	conn, err := net.Dial("tcp", c.ServerAddr)
 	if err != nil {
-		return fmt.Errorf("failed to connect to server: %w", err)
+		return fmt.Errorf("error connecting to server: %w", err)
 	}
 	c.conn = conn
 	c.encoder = gob.NewEncoder(conn)
@@ -48,21 +76,146 @@ func (c *Client) Connect() error {
 
 	fmt.Printf("Connected to server at %s\n", c.ServerAddr)
 
-	// Send join message
 	err = c.sendMessage(protocol.Message{
 		Type: protocol.JoinGame,
 		Payload: protocol.JoinGamePayload{
 			PlayerName: c.playerName,
+			GameCode:   c.gameCode,
 		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to send join message: %w", err)
 	}
 
+	// Read server response
+	var response protocol.Message
+	if err := c.decoder.Decode(&response); err != nil {
+		return fmt.Errorf("failed to read server response: %w", err)
+	}
+
+	switch response.Type {
+	case protocol.JoinGameResponseMsg:
+		joinResponse := response.Payload.(protocol.JoinGameResponse)
+		c.GameServerAddr = joinResponse.ServerURL
+		fmt.Printf("Game available to join! URL: %s\n", c.GameServerAddr)
+	case protocol.MatchmakerErrorMsg:
+		errorMsg := response.Payload.(protocol.MatchmakerError)
+		return fmt.Errorf("matchmaker error: %s", errorMsg.Message)
+	default:
+		return fmt.Errorf("unexpected response type: %s", response.Type)
+	}
+
+	// Connect to the game server
+	conn, err = net.Dial("tcp", c.GameServerAddr)
+	if err != nil {
+		return fmt.Errorf("failed to connect to game server: %w", err)
+	}
+	c.conn = conn
+	c.encoder = gob.NewEncoder(conn)
+	c.decoder = gob.NewDecoder(conn)
+	fmt.Printf("Connected to game server at %s\n", c.GameServerAddr)
+
+	// Send join message to the game server
+	err = c.sendMessage(protocol.Message{
+		Type: protocol.JoinGame,
+		Payload: protocol.JoinGamePayload{
+			PlayerName: c.playerName,
+			GameCode:   c.gameCode,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send join message to game server: %w", err)
+	}
+
 	go c.readLoop()
 	c.inputLoop()
 
 	return nil
+}
+
+func (c *Client) CreateGame() error {
+	c.collectName()
+
+	fmt.Println("Creating a new game...")
+
+	conn, err := net.Dial("tcp", c.ServerAddr)
+	if err != nil {
+		return fmt.Errorf("error connecting to server: %w", err)
+	}
+	c.conn = conn
+	c.encoder = gob.NewEncoder(conn)
+	c.decoder = gob.NewDecoder(conn)
+
+	fmt.Printf("Connected to server at %s\n", c.ServerAddr)
+
+	err = c.sendMessage(protocol.Message{
+		Type: protocol.CreateGame,
+		Payload: protocol.CreateGamePayload{
+			PlayerName: c.playerName,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send create message: %w", err)
+	}
+
+	// Read server response
+	var response protocol.Message
+	if err := c.decoder.Decode(&response); err != nil {
+		return fmt.Errorf("failed to read server response: %w", err)
+	}
+
+	switch response.Type {
+	case protocol.CreateGameResponseMsg:
+		createResponse := response.Payload.(protocol.CreateGameResponse)
+		c.GameServerAddr = createResponse.ServerURL
+		fmt.Printf("Created game! Code: %s URL: %s\n", createResponse.GameCode, createResponse.ServerURL)
+	case protocol.MatchmakerErrorMsg:
+		errorMsg := response.Payload.(protocol.MatchmakerError)
+		return fmt.Errorf("matchmaker error: %s", errorMsg.Message)
+	default:
+		return fmt.Errorf("unexpected response type: %s", response.Type)
+	}
+
+	// Connect to the game server
+	conn, err = net.Dial("tcp", c.GameServerAddr)
+	if err != nil {
+		return fmt.Errorf("failed to connect to game server: %w", err)
+	}
+	c.conn = conn
+	c.encoder = gob.NewEncoder(conn)
+	c.decoder = gob.NewDecoder(conn)
+	fmt.Printf("Connected to game server at %s\n", c.GameServerAddr)
+
+	// Send join message to the game server
+	err = c.sendMessage(protocol.Message{
+		Type: protocol.JoinGame,
+		Payload: protocol.JoinGamePayload{
+			PlayerName: c.playerName,
+			GameCode:   c.gameCode,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send join message to game server: %w", err)
+	}
+
+	go c.readLoop()
+	c.inputLoop()
+
+	return nil
+}
+
+func (c *Client) collectName() {
+	fmt.Print("Enter your player name: ")
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	c.playerName = scanner.Text()
+}
+
+func (c *Client) collectGameCode() {
+	fmt.Print("Enter the game code to join: ")
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	c.gameCode = strings.TrimSpace(scanner.Text())
 }
 
 func (c *Client) sendMessage(msg protocol.Message) error {
@@ -121,6 +274,21 @@ func (c *Client) inputLoop() {
 }
 
 func (c *Client) handleInput(input string) {
+	input = strings.TrimSpace(input)
+	if input == "start" {
+		if c.gameState == protocol.GameStateLobby {
+			err := c.sendMessage(protocol.Message{
+				Type:    protocol.StartGame,
+				Payload: protocol.StartGamePayload{},
+			})
+			if err != nil {
+				fmt.Printf("Failed to start game: %v\n", err)
+				return
+			}
+		}
+		return
+	}
+
 	if c.gameState != protocol.GameStateQuestion || c.currentQuestion == nil {
 		return
 	}
@@ -129,7 +297,6 @@ func (c *Client) handleInput(input string) {
 		return
 	}
 
-	input = strings.TrimSpace(input)
 	if len(input) != 1 {
 		fmt.Println("Please enter a single letter (A, B, C, or D)")
 		return
