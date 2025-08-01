@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -307,14 +308,7 @@ func (s *Server) gameLoop() {
 	s.state = protocol.GameStateScores
 	s.broadcastGameState()
 
-	rankings := make([]protocol.PlayerRank, 0, len(s.clients))
-	for id, client := range s.clients {
-		rankings = append(rankings, protocol.PlayerRank{
-			PlayerName: id,
-			Score:      client.score,
-			Rank:       0, // TODO: calculate rank based on score
-		})
-	}
+	rankings := s.RankClients()
 	s.broadcast <- protocol.Message{
 		Type: protocol.LeaderboardMsg,
 		Payload: protocol.LeaderboardPayload{
@@ -357,6 +351,38 @@ func (s *Server) handleMessage(msg protocol.Message, client *Client) {
 
 func (s *Server) updateScore(client *Client, points int) {
 	client.score += points
+}
+
+func (s *Server) RankClients() []protocol.PlayerRank {
+	rankings := make([]protocol.PlayerRank, 0, len(s.clients))
+	sortedClients := make([]*Client, 0, len(s.clients)) // sorted slice of clients by score
+
+	// sort clients by score
+	for _, client := range s.clients {
+		sortedClients = append(sortedClients, client)
+	}
+	slices.SortFunc(sortedClients, func(a, b *Client) int {
+		if a.score == b.score {
+			return 0
+		}
+
+		if a.score > b.score {
+			return -1
+		}
+
+		return 1
+	})
+
+	// assign ranks based on sorted order
+	for rank, client := range sortedClients {
+		rankings = append(rankings, protocol.PlayerRank{
+			PlayerName: client.playerName,
+			Score:      client.score,
+			Rank:       rank + 1,
+		})
+	}
+
+	return rankings
 }
 
 func (s *Server) broadcastGameState() {
