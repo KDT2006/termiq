@@ -66,9 +66,9 @@ type TimerPayload struct {
 
 // ScorePayload represents the score update for a player(after answering a question).
 type ScorePayload struct {
-	PlayerID string
-	Score    int
-	Correct  bool // whether the answer was correct
+	PlayerName string
+	Score      int
+	Correct    bool // whether the answer was correct
 }
 
 // LeaderboardPayload represents the leaderboard sent to the client.

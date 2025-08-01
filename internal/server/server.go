@@ -341,8 +341,20 @@ func (s *Server) handleMessage(msg protocol.Message, client *Client) {
 			return
 		}
 
+		var correct bool
 		if answerPayload.Answer == s.currentSet.Questions[s.currentQuestion].Answer {
 			s.updateScore(client, s.currentSet.Questions[s.currentQuestion].Points)
+			correct = true
+		}
+
+		// unicast score update to client
+		client.outbound <- protocol.Message{
+			Type: protocol.ScoreUpdate,
+			Payload: protocol.ScorePayload{
+				PlayerName: client.playerName,
+				Score:      client.score,
+				Correct:    correct,
+			},
 		}
 	default:
 		log.Printf("Received unknown message type %s from %s", msg.Type, client.conn.RemoteAddr())

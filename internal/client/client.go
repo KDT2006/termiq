@@ -167,7 +167,7 @@ func (c *Client) displayTimer(timer protocol.TimerPayload) {
 }
 
 func (c *Client) displayScore(score protocol.ScorePayload) {
-	if score.PlayerID == c.playerName {
+	if score.PlayerName == c.playerName {
 		if score.Correct {
 			fmt.Printf("\nCorrect! Score: %d\n", score.Score)
 		} else {

@@ -3,7 +3,7 @@ defaultSet: "general"
 sets:
   general:
     name: "General Knowledge"
-    timeLimit: 30
+    timeLimit: 5
     questions:
       - text: "What is the capital of France?"
         choices:
