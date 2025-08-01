@@ -19,7 +19,8 @@ type Client struct {
 	decoder         *gob.Decoder
 	currentQuestion *protocol.QuestionPayload
 	gameState       protocol.GameState
-	timeLeft        int // seconds left for the current question
+	timeLeft        int  // seconds left for the current question
+	answered        bool // whether the player has answered the current question
 }
 
 func New(serverAddr string) *Client {
@@ -92,6 +93,7 @@ func (c *Client) handleMessage(msg protocol.Message) {
 		c.displayGameState(state)
 
 	case protocol.QuestionMessage:
+		c.answered = false
 		question := msg.Payload.(protocol.QuestionPayload)
 		c.currentQuestion = &question
 		c.displayQuestion(question)
@@ -123,6 +125,10 @@ func (c *Client) handleInput(input string) {
 		return
 	}
 
+	if c.answered {
+		return
+	}
+
 	input = strings.TrimSpace(input)
 	if len(input) != 1 {
 		fmt.Println("Please enter a single letter (A, B, C, or D)")
@@ -135,7 +141,7 @@ func (c *Client) handleInput(input string) {
 		return
 	}
 
-	c.sendMessage(protocol.Message{
+	err := c.sendMessage(protocol.Message{
 		Type: protocol.SubmitAnswer,
 		Payload: protocol.SubmitAnswerPayload{
 			QuestionID: c.currentQuestion.QuestionID,
@@ -143,6 +149,12 @@ func (c *Client) handleInput(input string) {
 			TimeLeft:   c.timeLeft,
 		},
 	})
+	if err != nil {
+		fmt.Printf("Failed to submit answer: %v\n", err)
+		return
+	}
+
+	c.answered = true
 }
 
 // Display functions
