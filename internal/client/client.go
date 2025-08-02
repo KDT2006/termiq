@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"encoding/gob"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
 
+	"github.com/KDT2006/termiq/internal/config"
 	"github.com/KDT2006/termiq/internal/protocol"
 	"github.com/google/uuid"
 )
@@ -21,6 +23,8 @@ type Client struct {
 	gameCode        string // Game code for joining
 	encoder         *gob.Encoder
 	decoder         *gob.Decoder
+	config          *config.Config      // Loaded configuration
+	currentSet      *config.QuestionSet // Current question set being used
 	currentQuestion *protocol.QuestionPayload
 	gameState       protocol.GameState
 	timeLeft        int  // seconds left for the current question
@@ -140,6 +144,10 @@ func (c *Client) JoinGame() error {
 
 func (c *Client) CreateGame() error {
 	c.collectName()
+	// Get the config file name and store game configuration
+	if err := c.collectConfig(); err != nil {
+		return err
+	}
 
 	fmt.Println("Creating a new game...")
 
@@ -158,6 +166,8 @@ func (c *Client) CreateGame() error {
 		Payload: protocol.CreateGamePayload{
 			PlayerID:   c.ID,
 			PlayerName: c.playerName,
+			Config:     c.config,
+			CurrentSet: c.currentSet,
 		},
 	})
 	if err != nil {
@@ -223,6 +233,41 @@ func (c *Client) collectGameCode() {
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
 	c.gameCode = strings.TrimSpace(scanner.Text())
+}
+
+func (c *Client) collectConfig() error {
+	// Collect config path
+	fmt.Print("Enter the path to the configration file: ")
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	configPath := strings.TrimSpace(scanner.Text())
+	if configPath == "" {
+		return fmt.Errorf("config path cannot be empty")
+	}
+
+	// Collect default set
+	fmt.Print("Enter the question set to use: ")
+	scanner.Scan()
+	questionSet := strings.TrimSpace(scanner.Text())
+	if questionSet == "" {
+		return fmt.Errorf("question set cannot be empty")
+	}
+
+	// Load questions
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("failed to load config", "error", err)
+		return err
+	}
+	c.config = cfg
+
+	currentSet, err := cfg.GetQuestionSet(questionSet)
+	if err != nil {
+		return err
+	}
+	c.currentSet = currentSet
+
+	return nil
 }
 
 func (c *Client) sendMessage(msg protocol.Message) error {

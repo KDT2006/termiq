@@ -42,24 +42,8 @@ type Game struct {
 	ln              net.Listener // needed for graceful shutdown
 }
 
-func New(listenAddr string, configPath, questionSet string, hostClientID uuid.UUID) *Game {
+func New(listenAddr string, cfg *config.Config, set *config.QuestionSet, hostClientID uuid.UUID) *Game {
 	protocol.Init() // ensure protocol types are registered with gob
-
-	// Load questions
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		slog.Error("failed to load config", "error", err)
-	}
-
-	var set *config.QuestionSet
-	if questionSet == "" {
-		set, err = cfg.GetDefaultSet()
-	} else {
-		set, err = cfg.GetQuestionSet(questionSet)
-	}
-	if err != nil {
-		slog.Error("failed to get question set", "error", err)
-	}
 
 	return &Game{
 		ListenAddr: listenAddr,

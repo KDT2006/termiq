@@ -146,7 +146,7 @@ func (s *Server) handleGameCreate(conn net.Conn, msg protocol.Message) {
 		return
 	}
 
-	newGame := game.New(gameAddr, "", "", createMessage.PlayerID)
+	newGame := game.New(gameAddr, createMessage.Config, createMessage.CurrentSet, createMessage.PlayerID)
 	s.Games[gameCode] = newGame
 	s.mu.Unlock()
 
