@@ -27,6 +27,7 @@ const (
 type Game struct {
 	ListenAddr      string
 	HostName        string // Name of the host client(TODO: use UUID instead)
+	HostAddr        string
 	clients         map[string]*Client
 	mu              sync.Mutex
 	broadcast       chan protocol.Message
@@ -91,6 +92,7 @@ func (s *Game) Start() error {
 			log.Println("Game shutting down...")
 			s.closeAllClients()
 			s.wg.Wait()
+			log.Printf("Game %s shutdown complete", s.ListenAddr)
 			return nil
 		default:
 			{
@@ -98,7 +100,7 @@ func (s *Game) Start() error {
 				if err != nil {
 					if errors.Is(err, net.ErrClosed) {
 						log.Println("Listener closed")
-						return nil
+						continue
 					}
 
 					log.Printf("failed to accept Connection: %v", err)
@@ -138,13 +140,6 @@ func (s *Game) HandleConn(Conn net.Conn) {
 		return
 	}
 
-	// Check if client is the host
-	if playerName == s.HostName {
-		log.Printf("Host client connected: %s", Conn.RemoteAddr())
-	} else {
-		log.Printf("Regular client connected: %s", Conn.RemoteAddr())
-	}
-
 	client := &Client{
 		Conn:       Conn,
 		Host:       playerName == s.HostName,
@@ -152,6 +147,34 @@ func (s *Game) HandleConn(Conn net.Conn) {
 		Encoder:    gob.NewEncoder(Conn),
 		Decoder:    ConnDecoder,
 		PlayerName: playerName,
+	}
+
+	// Check if client is the host
+	if playerName == s.HostName {
+		log.Printf("Host client connected: %s", Conn.RemoteAddr())
+		s.HostAddr = Conn.RemoteAddr().String()
+	} else {
+		log.Printf("Regular client connected: %s", Conn.RemoteAddr())
+
+		// unicast to host to notify about new client
+		go func() {
+			hostClient, ok := s.clients[s.HostAddr]
+			if !ok {
+				log.Printf("Host client yet to connect, cannot notify about new client %s", Conn.RemoteAddr())
+				Conn.Close()
+				return
+			}
+
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			hostClient.Outbound <- protocol.Message{
+				Type: protocol.NewClientMsg,
+				Payload: protocol.NewClientPayload{
+					PlayerName:  playerName,
+					PlayerCount: len(s.clients),
+				},
+			}
+		}()
 	}
 
 	s.registerClient(client)
@@ -344,7 +367,7 @@ func (s *Game) gameLoop() {
 func (s *Game) handleMessage(msg protocol.Message, client *Client) {
 	switch msg.Type {
 	case protocol.SubmitAnswer:
-		fmt.Printf("Received answer submission from client %s\n", client.Conn.RemoteAddr())
+		log.Printf("Received answer submission from client %s\n", client.Conn.RemoteAddr())
 		if s.state != protocol.GameStateQuestion {
 			log.Printf("Received answer from %s but game is not in question state", client.Conn.RemoteAddr())
 			return

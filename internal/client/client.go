@@ -245,6 +245,10 @@ func (c *Client) handleMessage(msg protocol.Message) {
 		c.gameState = state.State
 		c.displayGameState(state)
 
+	case protocol.NewClientMsg:
+		newClient := msg.Payload.(protocol.NewClientPayload)
+		fmt.Printf("New player joined: %s (Total players: %d)\n", newClient.PlayerName, newClient.PlayerCount)
+
 	case protocol.QuestionMessage:
 		c.answered = false
 		question := msg.Payload.(protocol.QuestionPayload)

@@ -19,12 +19,16 @@ type Server struct {
 	ListenAddr string
 	Games      map[string]*game.Game
 	mu         sync.Mutex
+
+	ports   map[int]struct{} // list of ports used for games
+	portsMu sync.Mutex
 }
 
 func New(listenAddr string) *Server {
 	return &Server{
 		ListenAddr: listenAddr,
 		Games:      make(map[string]*game.Game),
+		ports:      make(map[int]struct{}),
 	}
 }
 
@@ -132,8 +136,15 @@ func (s *Server) handleGameCreate(conn net.Conn, msg protocol.Message) {
 
 	// Create and start a new game instance
 	s.mu.Lock()
-	gameCode := s.generateGameCode()       // Generate a unique game code
-	gameAddr := s.generateRandomGameAddr() // Generate a random game address
+	gameCode := s.generateGameCode()            // Generate a unique game code
+	gameAddr, err := s.generateRandomGameAddr() // Generate a random game address
+	if err != nil {
+		log.Printf("failed to generate game address: %v", err)
+		s.respondWithError(encoder, "failed to generate game address")
+		s.mu.Unlock()
+		return
+	}
+
 	newGame := game.New(gameAddr, "", "", createMessage.PlayerName)
 	s.Games[gameCode] = newGame
 	s.mu.Unlock()
@@ -172,8 +183,40 @@ func (s *Server) generateGameCode() string {
 	return string(code[:])
 }
 
-func (s *Server) generateRandomGameAddr() string {
-	return fmt.Sprintf("localhost:%d", 4000+1+len(s.Games)) // Simple port allocation logic
+func (s *Server) generateRandomGameAddr() (string, error) {
+	s.portsMu.Lock()
+	defer s.portsMu.Unlock()
+
+	port := s.generateRandomPort()
+	if port == 0 {
+		return "", fmt.Errorf("no available ports")
+	} else {
+		return fmt.Sprintf("localhost:%d", port), nil
+	}
+}
+
+func (s *Server) generateRandomPort() int {
+	base := 4001
+	maxPorts := 1000    // Total number of ports in the range
+	maxAttempts := 1000 // Max attempts to find a free port
+
+	if len(s.ports) >= maxPorts {
+		log.Printf("maximum number of ports reached")
+		return 0 // return 0 to indicate no ports available
+	}
+
+	for range maxAttempts {
+		offset := rand.IntN(maxPorts)
+		port := base + offset
+
+		if _, ok := s.ports[port]; !ok {
+			s.ports[port] = struct{}{}
+			return port
+		}
+	}
+
+	log.Printf("Failed to find a free port after %d attempts", maxAttempts)
+	return 0
 }
 
 func (s *Server) respondWithError(encoder *gob.Encoder, message string) {

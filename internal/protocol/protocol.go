@@ -25,6 +25,7 @@ func Init() {
 	gob.Register(config.Question{})
 	gob.Register(JoinGameResponse{})
 	gob.Register(CreateGameResponse{})
+	gob.Register(NewClientPayload{})
 	gob.Register(StartGamePayload{})
 	gob.Register(MatchmakerError{})
 }
@@ -37,6 +38,9 @@ const (
 	ScoreUpdate     MessageType = "score"
 	LeaderboardMsg  MessageType = "leaderboard"
 	GameOverMsg     MessageType = "game_over"
+
+	// Game -> Host
+	NewClientMsg MessageType = "new_client"
 
 	// Client -> Game
 	StartGame    MessageType = "start_game"
@@ -114,6 +118,11 @@ type SubmitAnswerPayload struct {
 type JoinGamePayload struct {
 	PlayerName string
 	GameCode   string // auto-genrerated code on the server
+}
+
+type NewClientPayload struct {
+	PlayerName  string
+	PlayerCount int
 }
 
 type StartGamePayload struct { // empty struct to signal game start from the host
