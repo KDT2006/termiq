@@ -9,9 +9,11 @@ import (
 	"strings"
 
 	"github.com/KDT2006/termiq/internal/protocol"
+	"github.com/google/uuid"
 )
 
 type Client struct {
+	ID              uuid.UUID
 	ServerAddr      string // Matchmaker server address
 	GameServerAddr  string // Game server address
 	conn            net.Conn
@@ -27,6 +29,7 @@ type Client struct {
 
 func New(serverAddr string) *Client {
 	return &Client{
+		ID:         uuid.New(),
 		ServerAddr: serverAddr,
 		gameState:  protocol.GameStateLobby,
 	}
@@ -79,6 +82,7 @@ func (c *Client) JoinGame() error {
 	err = c.sendMessage(protocol.Message{
 		Type: protocol.JoinGame,
 		Payload: protocol.JoinGamePayload{
+			PlayerID:   c.ID,
 			PlayerName: c.playerName,
 			GameCode:   c.gameCode,
 		},
@@ -119,6 +123,7 @@ func (c *Client) JoinGame() error {
 	err = c.sendMessage(protocol.Message{
 		Type: protocol.JoinGame,
 		Payload: protocol.JoinGamePayload{
+			PlayerID:   c.ID,
 			PlayerName: c.playerName,
 			GameCode:   c.gameCode,
 		},
@@ -151,6 +156,7 @@ func (c *Client) CreateGame() error {
 	err = c.sendMessage(protocol.Message{
 		Type: protocol.CreateGame,
 		Payload: protocol.CreateGamePayload{
+			PlayerID:   c.ID,
 			PlayerName: c.playerName,
 		},
 	})
@@ -190,6 +196,7 @@ func (c *Client) CreateGame() error {
 	err = c.sendMessage(protocol.Message{
 		Type: protocol.JoinGame,
 		Payload: protocol.JoinGamePayload{
+			PlayerID:   c.ID,
 			PlayerName: c.playerName,
 			GameCode:   c.gameCode,
 		},

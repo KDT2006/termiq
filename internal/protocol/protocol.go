@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 
 	"github.com/KDT2006/termiq/internal/config"
+	"github.com/google/uuid"
 )
 
 type MessageType string
@@ -116,10 +117,12 @@ type SubmitAnswerPayload struct {
 }
 
 type JoinGamePayload struct {
+	PlayerID   uuid.UUID
 	PlayerName string
 	GameCode   string // auto-genrerated code on the server
 }
 
+// NewClientPayload represents the payload sent to the host when a new client connects.
 type NewClientPayload struct {
 	PlayerName  string
 	PlayerCount int
@@ -129,6 +132,7 @@ type StartGamePayload struct { // empty struct to signal game start from the hos
 }
 
 type CreateGamePayload struct {
+	PlayerID   uuid.UUID
 	PlayerName string
 	Config     *config.Config
 	CurrentSet *config.QuestionSet

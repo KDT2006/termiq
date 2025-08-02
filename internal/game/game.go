@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"slices"
 	"sync"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/KDT2006/termiq/internal/config"
 	"github.com/KDT2006/termiq/internal/protocol"
+	"github.com/google/uuid"
 )
 
 type GameState byte
@@ -26,7 +27,7 @@ const (
 // Game represents a single game instance. It manages clients, game state, and communication.
 type Game struct {
 	ListenAddr      string
-	HostName        string // Name of the host client(TODO: use UUID instead)
+	HostID          uuid.UUID // ID of the host client
 	HostAddr        string
 	clients         map[string]*Client
 	mu              sync.Mutex
@@ -41,13 +42,13 @@ type Game struct {
 	ln              net.Listener // needed for graceful shutdown
 }
 
-func New(listenAddr string, configPath, questionSet, hostName string) *Game {
+func New(listenAddr string, configPath, questionSet string, hostClientID uuid.UUID) *Game {
 	protocol.Init() // ensure protocol types are registered with gob
 
 	// Load questions
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		slog.Error("failed to load config", "error", err)
 	}
 
 	var set *config.QuestionSet
@@ -57,12 +58,12 @@ func New(listenAddr string, configPath, questionSet, hostName string) *Game {
 		set, err = cfg.GetQuestionSet(questionSet)
 	}
 	if err != nil {
-		log.Fatalf("failed to get question set: %v", err)
+		slog.Error("failed to get question set", "error", err)
 	}
 
 	return &Game{
 		ListenAddr: listenAddr,
-		HostName:   hostName,
+		HostID:     hostClientID,
 		clients:    make(map[string]*Client),
 		config:     cfg,
 		currentSet: set,
@@ -84,30 +85,30 @@ func (s *Game) Start() error {
 	go s.handleBroadcasts()
 	go s.gameLoop()
 
-	log.Printf("Game is listening on %s", s.ListenAddr)
+	slog.Info("Game is listening", "address", s.ListenAddr)
 
 	for {
 		select {
 		case <-s.endCh:
-			log.Println("Game shutting down...")
+			slog.Info("Game shutting down", "address", s.ListenAddr)
 			s.closeAllClients()
 			s.wg.Wait()
-			log.Printf("Game %s shutdown complete", s.ListenAddr)
+			slog.Info("Game shutdown complete", "address", s.ListenAddr)
 			return nil
 		default:
 			{
 				Conn, err := ln.Accept()
 				if err != nil {
 					if errors.Is(err, net.ErrClosed) {
-						log.Println("Listener closed")
+						slog.Info("Listener closed", "address", s.ListenAddr)
 						continue
 					}
 
-					log.Printf("failed to accept Connection: %v", err)
+					slog.Error("failed to accept Connection", "address", s.ListenAddr, "error", err)
 					continue
 				}
 
-				log.Printf("accepted Connection from %s", Conn.RemoteAddr())
+				slog.Info("accepted Connection", "address", s.ListenAddr, "remote", Conn.RemoteAddr())
 				go s.HandleConn(Conn)
 			}
 		}
@@ -118,49 +119,52 @@ func (s *Game) HandleConn(Conn net.Conn) {
 	ConnDecoder := gob.NewDecoder(Conn)
 	var msg protocol.Message
 	if err := ConnDecoder.Decode(&msg); err != nil {
-		log.Printf("failed to decode message: %v", err)
+		slog.Error("failed to decode message", "address", s.ListenAddr, "error", err)
 		Conn.Close()
 		return
 	}
 
 	var playerName string
+	var playerID uuid.UUID
 
 	if msg.Type == protocol.JoinGame {
 		joinMsg, ok := msg.Payload.(protocol.JoinGamePayload)
 		if !ok {
-			log.Printf("invalid join game payload from %s", Conn.RemoteAddr())
+			slog.Error("invalid join game payload", "address", s.ListenAddr, "remote", Conn.RemoteAddr())
 			Conn.Close()
 			return
 		}
 
 		playerName = joinMsg.PlayerName
+		playerID = joinMsg.PlayerID
 	} else {
-		log.Printf("expected join message but got %s from %s", msg.Type, Conn.RemoteAddr())
+		slog.Error("expected join message but got", "type", msg.Type, "remote", Conn.RemoteAddr())
 		Conn.Close()
 		return
 	}
 
 	client := &Client{
 		Conn:       Conn,
-		Host:       playerName == s.HostName,
+		Host:       playerID == s.HostID,
 		Outbound:   make(chan protocol.Message, 10),
 		Encoder:    gob.NewEncoder(Conn),
 		Decoder:    ConnDecoder,
 		PlayerName: playerName,
+		PlayerID:   playerID,
 	}
 
 	// Check if client is the host
-	if playerName == s.HostName {
-		log.Printf("Host client connected: %s", Conn.RemoteAddr())
+	if playerID == s.HostID {
+		slog.Info("Host client connected", "address", s.ListenAddr, "remote", Conn.RemoteAddr())
 		s.HostAddr = Conn.RemoteAddr().String()
 	} else {
-		log.Printf("Regular client connected: %s", Conn.RemoteAddr())
+		slog.Info("Regular client connected", "address", s.ListenAddr, "remote", Conn.RemoteAddr())
 
 		// unicast to host to notify about new client
 		go func() {
 			hostClient, ok := s.clients[s.HostAddr]
 			if !ok {
-				log.Printf("Host client yet to connect, cannot notify about new client %s", Conn.RemoteAddr())
+				slog.Error("Host client yet to connect, cannot notify about new client", "address", s.ListenAddr, "remote", Conn.RemoteAddr())
 				Conn.Close()
 				return
 			}
@@ -191,7 +195,7 @@ func (s *Game) handleBroadcasts() {
 	for {
 		select {
 		case <-s.endCh:
-			log.Println("Broadcast handler shutting down")
+			slog.Info("Broadcast handler shutting down", "address", s.ListenAddr)
 			return
 		case msg := <-s.broadcast:
 			{
@@ -203,7 +207,7 @@ func (s *Game) handleBroadcasts() {
 					case client.Outbound <- msg:
 					default:
 						// client too slow to receive, unregister
-						log.Printf("client %s too slow to receive message, unregistering", client.Conn.RemoteAddr())
+						slog.Error("client too slow to receive message, unregistering", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 						toUnregister[client] = struct{}{}
 					}
 				}
@@ -211,7 +215,7 @@ func (s *Game) handleBroadcasts() {
 
 				for client := range toUnregister {
 					s.unregisterClient(client)
-					log.Printf("unregistered client %s due to write failure", client.Conn.RemoteAddr())
+					slog.Error("unregistered client due to write failure", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 				}
 			}
 		}
@@ -234,7 +238,7 @@ func (s *Game) unregisterClient(client *Client) {
 		close(client.Outbound)
 		delete(s.clients, client.Conn.RemoteAddr().String())
 		client.Conn.Close()
-		log.Printf("unregistered client %s", client.Conn.RemoteAddr())
+		slog.Info("unregistered client", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 	}
 }
 
@@ -245,7 +249,7 @@ func (s *Game) readLoop(client *Client) {
 	for {
 		select {
 		case <-s.endCh:
-			log.Printf("read loop for client %s shutting down", client.Conn.RemoteAddr())
+			slog.Info("read loop shutting down", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 			return
 		default:
 			{
@@ -254,11 +258,11 @@ func (s *Game) readLoop(client *Client) {
 				if err != nil {
 					if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) &&
 						s.state == protocol.GameStateFinished {
-						log.Printf("Connection closed by client %s", client.Conn.RemoteAddr())
+						slog.Info("Connection closed by client", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 						return
 					}
 
-					log.Printf("error decoding message from client %s: %v", client.Conn.RemoteAddr(), err)
+					slog.Error("error decoding message from client", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr(), "error", err)
 					return
 				}
 
@@ -275,7 +279,7 @@ func (s *Game) writeLoop(client *Client) {
 	for {
 		select {
 		case <-s.endCh:
-			log.Printf("write loop for client %s shutting down", client.Conn.RemoteAddr())
+			slog.Info("write loop shutting down", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 			return
 		case msg, ok := <-client.Outbound:
 			{
@@ -286,11 +290,11 @@ func (s *Game) writeLoop(client *Client) {
 				if err != nil {
 					if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) &&
 						s.state == protocol.GameStateFinished {
-						log.Printf("Connection closed by client %s", client.Conn.RemoteAddr())
+						slog.Info("Connection closed by client", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 						return
 					}
 
-					log.Printf("error writing to client %s: %v", client.Conn.RemoteAddr(), err)
+					slog.Error("error writing to client", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr(), "error", err)
 					return
 				}
 			}
@@ -302,13 +306,13 @@ func (s *Game) gameLoop() {
 	<-s.startCh
 
 	s.state = protocol.GameStateLobby
-	log.Println("Waiting for minimum players to start the game...")
+	slog.Info("Waiting for minimum players to start the game...", "address", s.ListenAddr)
 
 	for len(s.clients) < 2 {
 		time.Sleep(time.Second)
 	}
 
-	log.Println("Minimum players reached, starting the game...")
+	slog.Info("Minimum players reached, starting the game...", "address", s.ListenAddr)
 	s.state = protocol.GameStateQuestion
 	s.broadcastGameState()
 
@@ -355,7 +359,7 @@ func (s *Game) gameLoop() {
 	}
 	time.Sleep(2 * time.Second) // give clients time to process scores
 
-	fmt.Println("Game finished, waiting for clients to receive final messages...")
+	slog.Info("Game finished, waiting for clients to receive final messages...", "address", s.ListenAddr)
 	s.state = protocol.GameStateFinished
 	s.broadcastGameState()
 
@@ -367,15 +371,15 @@ func (s *Game) gameLoop() {
 func (s *Game) handleMessage(msg protocol.Message, client *Client) {
 	switch msg.Type {
 	case protocol.SubmitAnswer:
-		log.Printf("Received answer submission from client %s\n", client.Conn.RemoteAddr())
+		slog.Info("Received answer submission from client", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 		if s.state != protocol.GameStateQuestion {
-			log.Printf("Received answer from %s but game is not in question state", client.Conn.RemoteAddr())
+			slog.Info("Received answer from client but game is not in question state", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 			return
 		}
 
 		answerPayload, ok := msg.Payload.(protocol.SubmitAnswerPayload)
 		if !ok {
-			log.Printf("Invalid payload type for SubmitAnswer from %s", client.Conn.RemoteAddr())
+			slog.Error("Invalid payload type for SubmitAnswer", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 			return
 		}
 
@@ -396,13 +400,13 @@ func (s *Game) handleMessage(msg protocol.Message, client *Client) {
 		}
 	case protocol.StartGame:
 		if !client.Host {
-			log.Printf("Received StartGame from non-host client %s", client.Conn.RemoteAddr())
+			slog.Info("Received StartGame from non-host client", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr())
 			return
 		}
 
 		s.startCh <- struct{}{}
 	default:
-		log.Printf("Received unknown message type %s from %s", msg.Type, client.Conn.RemoteAddr())
+		slog.Error("Received unknown message type", "address", s.ListenAddr, "remote", client.Conn.RemoteAddr(), "type", msg.Type)
 	}
 }
 

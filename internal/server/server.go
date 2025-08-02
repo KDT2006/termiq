@@ -3,7 +3,7 @@ package server
 import (
 	"encoding/gob"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"sync"
@@ -33,9 +33,10 @@ func New(listenAddr string) *Server {
 }
 
 func (s *Server) Start() error {
-	protocol.Init() // ensure protocol types are registered with gob
+	protocol.Init()    // ensure protocol types are registered with gob
+	go s.cleanupLoop() // Start the cleanup job
 
-	log.Printf("Starting server on %s", s.ListenAddr)
+	slog.Info("Starting server", "address", s.ListenAddr)
 
 	ln, err := net.Listen("tcp", s.ListenAddr)
 	if err != nil {
@@ -46,7 +47,7 @@ func (s *Server) Start() error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("failed to accept connection: %v", err)
+			slog.Error("failed to accept connection", "address", s.ListenAddr, "error", err)
 			continue
 		}
 
@@ -59,7 +60,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	var msg protocol.Message
 	decoder := gob.NewDecoder(conn)
 	if err := decoder.Decode(&msg); err != nil {
-		log.Printf("failed to decode message: %v", err)
+		slog.Error("failed to decode message", "address", s.ListenAddr, "error", err)
 		conn.Close()
 		return
 	}
@@ -70,7 +71,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	case protocol.CreateGame:
 		s.handleGameCreate(conn, msg)
 	default:
-		log.Printf("unknown message type: %s", msg.Type)
+		slog.Error("unknown message type", "address", s.ListenAddr, "type", msg.Type)
 		conn.Close()
 		return
 	}
@@ -83,7 +84,7 @@ func (s *Server) handleGameJoin(conn net.Conn, msg protocol.Message) {
 
 	joinMessage, ok := msg.Payload.(protocol.JoinGamePayload)
 	if !ok {
-		log.Printf("invalid join game payload: %v", msg.Payload)
+		slog.Error("invalid join game payload", "address", s.ListenAddr, "payload", msg.Payload)
 		s.respondWithError(encoder, "invalid join game payload")
 		return
 	}
@@ -91,7 +92,7 @@ func (s *Server) handleGameJoin(conn net.Conn, msg protocol.Message) {
 	s.mu.Lock()
 	gameCode := joinMessage.GameCode
 	if _, ok := s.Games[gameCode]; !ok {
-		log.Printf("game not found: %s", gameCode)
+		slog.Error("game not found", "address", s.ListenAddr, "gameCode", gameCode)
 		s.mu.Unlock()
 		s.respondWithError(encoder, "game not found")
 		return
@@ -103,7 +104,7 @@ func (s *Server) handleGameJoin(conn net.Conn, msg protocol.Message) {
 	// Check if the game is in the lobby state
 	state := gameInstance.GetState()
 	if state != protocol.GameStateLobby {
-		log.Printf("game %s is not in lobby state, current state: %s", gameCode, state)
+		slog.Error("game is not in lobby state", "address", s.ListenAddr, "gameCode", gameCode, "currentState", state)
 		s.respondWithError(encoder, "game is not in lobby state")
 		return
 	}
@@ -117,7 +118,7 @@ func (s *Server) handleGameJoin(conn net.Conn, msg protocol.Message) {
 	}
 
 	if err := encoder.Encode(response); err != nil {
-		log.Printf("failed to send join response: %v", err)
+		slog.Error("failed to send join response", "address", s.ListenAddr, "error", err)
 		return
 	}
 }
@@ -129,7 +130,7 @@ func (s *Server) handleGameCreate(conn net.Conn, msg protocol.Message) {
 
 	createMessage, ok := msg.Payload.(protocol.CreateGamePayload)
 	if !ok {
-		log.Printf("invalid create game payload: %v", msg.Payload)
+		slog.Error("invalid create game payload", "address", s.ListenAddr, "payload", msg.Payload)
 		s.respondWithError(encoder, "invalid create game payload")
 		return
 	}
@@ -139,19 +140,19 @@ func (s *Server) handleGameCreate(conn net.Conn, msg protocol.Message) {
 	gameCode := s.generateGameCode()            // Generate a unique game code
 	gameAddr, err := s.generateRandomGameAddr() // Generate a random game address
 	if err != nil {
-		log.Printf("failed to generate game address: %v", err)
+		slog.Error("failed to generate game address", "address", s.ListenAddr, "error", err)
 		s.respondWithError(encoder, "failed to generate game address")
 		s.mu.Unlock()
 		return
 	}
 
-	newGame := game.New(gameAddr, "", "", createMessage.PlayerName)
+	newGame := game.New(gameAddr, "", "", createMessage.PlayerID)
 	s.Games[gameCode] = newGame
 	s.mu.Unlock()
 
 	go func() {
 		if err := newGame.Start(); err != nil {
-			log.Printf("failed to start game: %v", err)
+			slog.Error("failed to start game", "address", s.ListenAddr, "error", err)
 			s.respondWithError(encoder, "failed to start game")
 			return
 		}
@@ -167,7 +168,7 @@ func (s *Server) handleGameCreate(conn net.Conn, msg protocol.Message) {
 		},
 	}
 	if err := encoder.Encode(response); err != nil {
-		log.Printf("failed to send create game response: %v", err)
+		slog.Error("failed to send create game response", "address", s.ListenAddr, "error", err)
 		return
 	}
 }
@@ -201,7 +202,7 @@ func (s *Server) generateRandomPort() int {
 	maxAttempts := 1000 // Max attempts to find a free port
 
 	if len(s.ports) >= maxPorts {
-		log.Printf("maximum number of ports reached")
+		slog.Error("maximum number of ports reached", "address", s.ListenAddr)
 		return 0 // return 0 to indicate no ports available
 	}
 
@@ -215,7 +216,7 @@ func (s *Server) generateRandomPort() int {
 		}
 	}
 
-	log.Printf("Failed to find a free port after %d attempts", maxAttempts)
+	slog.Error("Failed to find a free port after attempts", "address", s.ListenAddr, "attempts", maxAttempts)
 	return 0
 }
 
@@ -226,4 +227,42 @@ func (s *Server) respondWithError(encoder *gob.Encoder, message string) {
 			Message: message,
 		},
 	})
+}
+
+func (s *Server) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.mu.Lock()
+		for code, game := range s.Games {
+			if game.GetState() == protocol.GameStateFinished {
+				slog.Info("Cleaning up finished game", "gameAddr", game.ListenAddr, "gameCode", code)
+				delete(s.Games, code)
+
+				port, ok := s.getGamePort(game.ListenAddr)
+				if !ok {
+					slog.Error("Failed to find port for finished game", "gameAddr", game.ListenAddr, "gameCode", code)
+					continue
+				}
+				delete(s.ports, port)
+			} else {
+				slog.Debug("Game still active, skipping cleanup", "address", s.ListenAddr, "gameCode", code)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
+func (s *Server) getGamePort(gameAddr string) (int, bool) {
+	s.portsMu.Lock()
+	defer s.portsMu.Unlock()
+
+	for port := range s.ports {
+		if fmt.Sprintf("localhost:%d", port) == gameAddr {
+			return port, true
+		}
+	}
+
+	return 0, false
 }
