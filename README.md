@@ -1,4 +1,4 @@
-# 🎯 Termiq - Terminal-Based Kahoot Clone
+# Termiq - Terminal-Based Kahoot Clone
 
 A full-fledged terminal-based multiplayer quiz game inspired by Kahoot, built with Go. Host and join interactive quizzes with real-time scoring, leaderboards, and a modern terminal UI.
 
@@ -64,7 +64,7 @@ Termiq uses a distributed architecture with three main components:
    - Create a new game (host)
    - Join an existing game (player)
 
-## ⚙️ Configuration
+## Configuration
 
 ### Question Sets
 
