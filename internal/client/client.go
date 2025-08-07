@@ -11,6 +11,7 @@ import (
 
 	"github.com/KDT2006/termiq/internal/config"
 	"github.com/KDT2006/termiq/internal/protocol"
+	"github.com/fatih/color"
 	"github.com/google/uuid"
 )
 
@@ -44,10 +45,10 @@ func (c *Client) Init() {
 	protocol.Init()
 
 	// Client can either Join or Host a quiz
-	fmt.Println("Welcome to Termiq! You can either join an existing game or create a new one.")
-	fmt.Println("1. Join an existing game")
-	fmt.Println("2. Create a new game")
-	fmt.Print("Please select an option (1 or 2): ")
+	color.HiBlue("Welcome to Termiq! You can either join an existing game or create a new one.")
+	color.HiCyan("\n1. Join an existing game")
+	color.HiCyan("2. Create a new game")
+	fmt.Print("\nPlease select an option (1 or 2): ")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
@@ -64,7 +65,7 @@ func (c *Client) Init() {
 			os.Exit(1)
 		}
 	default:
-		fmt.Println("Invalid option. Please restart the client and try again.")
+		color.HiRed("Invalid option. Please restart the client and try again.")
 		os.Exit(1)
 	}
 }
@@ -389,12 +390,14 @@ func (c *Client) displayGameState(state protocol.GameStatePayload) {
 }
 
 func (c *Client) displayQuestion(question protocol.QuestionPayload) {
-	fmt.Printf("\n=== Question %d ===\n", question.QuestionID+1)
-	fmt.Printf("%s\n\n", question.Question)
+	color.HiCyan("\n=== Question %d ===\n", question.QuestionID+1)
+	color.HiWhite("%s\n\n", question.Question)
 	for i, choice := range question.Choices {
-		fmt.Printf("%c) %s\n", 'A'+i, choice)
+		color.White("%c) %s\n", 'A'+i, choice)
 	}
-	fmt.Printf("Time limit: %d seconds\n", question.TimeLimit)
+	color.HiYellow("Time limit: %d seconds\n", question.TimeLimit)
+
+	fmt.Print(color.HiBlueString("Enter your choice: "))
 }
 
 func (c *Client) displayTimer(timer protocol.TimerPayload) {
@@ -404,17 +407,20 @@ func (c *Client) displayTimer(timer protocol.TimerPayload) {
 func (c *Client) displayScore(score protocol.ScorePayload) {
 	if score.PlayerName == c.playerName {
 		if score.Correct {
-			fmt.Printf("\nCorrect! Score: %d\n", score.Score)
+			color.HiGreen("\nCorrect! Score: %d\n", score.Score)
 		} else {
-			fmt.Printf("\nIncorrect. Score: %d\n", score.Score)
+			color.HiRed("\nIncorrect. Score: %d\n", score.Score)
 		}
 	}
 }
 
 func (c *Client) displayLeaderboard(leaderboard protocol.LeaderboardPayload) {
-	fmt.Println("\n=== LEADERBOARD ===")
+	color.HiCyan("\n=== LEADERBOARD ===")
 	for _, rank := range leaderboard.Rankings {
-		fmt.Printf("%d. %s: %d points\n", rank.Rank, rank.PlayerName, rank.Score)
+		fmt.Print(color.HiYellowString("%d. ", rank.Rank))
+		fmt.Print(color.HiMagentaString("%s: ", rank.PlayerName))
+		fmt.Print(color.HiGreenString("%d", rank.Score))
+		fmt.Println()
 	}
 	fmt.Println("=================")
 }
